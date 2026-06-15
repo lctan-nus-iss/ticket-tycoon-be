@@ -1,0 +1,487 @@
+package com.tickertycoon.service;
+
+import com.tickertycoon.agent.*;
+import com.tickertycoon.dto.EventDTO;
+import com.tickertycoon.dto.GameStateDTO;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.stream.Collectors;
+
+/**
+ * Core turn engine. Orchestrates:
+ *   1. Event generation (EventAgent)
+ *   2. Price updates + bankruptcy checks
+ *   3. AI player decisions (AIPlayerAgent) — run in parallel
+ *   4. Income / dividend payments
+ *   5. Win check
+ */
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class GameService {
+
+    private final EventAgent     eventAgent;
+    private final AIPlayerAgent  aiPlayerAgent;
+
+    // In-memory game state (replace with JPA repository in production)
+    private final Map<String, GameState> games = new ConcurrentHashMap<>();
+
+    // ── Start game ──────────────────────────────────────────────────────────────
+
+    public GameStateDTO startGame(String humanName, List<String> aiArchetypeIds) {
+        String gameId = UUID.randomUUID().toString();
+        GameState state = new GameState(gameId, humanName, aiArchetypeIds);
+        games.put(gameId, state);
+        log.info("[GameService] Started game {} with {} players", gameId, state.players.size());
+        return toDTO(state);
+    }
+
+    // ── Advance quarter: generate event, run AI, pay income ─────────────────────
+
+    public GameStateDTO advanceQuarter(String gameId) {
+        GameState state = getState(gameId);
+        if (state.gameOver) throw new IllegalStateException("Game is already over");
+
+        // 1. Generate market event
+        String recentEvents = state.eventHistory.stream()
+            .limit(6).map(e -> e.getName()).collect(Collectors.joining(", "));
+
+        EventDTO event = eventAgent.generateNext(
+            state.quarter, state.year,
+            pickMacroContext(state),
+            recentEvents,
+            buildConstraints(state)
+        );
+        state.currentEvent = event;
+        state.eventHistory.add(0, event);
+        log.info("[GameService] game={} Q{}Y{} event={} ({})",
+            gameId, state.quarter, state.year, event.getName(), event.getSeverity());
+
+        // 2. Apply price changes + bankruptcy checks
+        applyPrices(state, event);
+
+        // 3. AI players decide and trade — run in parallel
+        runAIPlayers(state, event);
+
+        // 4. Pay income / dividends to all players
+        payIncome(state);
+
+        // 5. Recalculate net worths
+        recalcNetWorths(state);
+
+        // 6. Check win condition
+        state.players.stream()
+            .filter(p -> p.netWorth >= 1_000_000)
+            .findFirst()
+            .ifPresent(winner -> {
+                state.gameOver  = true;
+                state.winnerId  = winner.id;
+                log.info("[GameService] game={} WINNER={} netWorth={}",
+                    gameId, winner.name, winner.netWorth);
+            });
+
+        // 7. Advance quarter counter
+        if (!state.gameOver) {
+            state.quarter++;
+            if (state.quarter > 4) { state.quarter = 1; state.year++; }
+        }
+
+        return toDTO(state);
+    }
+
+    // ── Human player trades ──────────────────────────────────────────────────────
+
+    public GameStateDTO humanBuy(String gameId, String assetId, double amount) {
+        GameState state = getState(gameId);
+        PlayerState human = state.players.get(0);
+
+        if (state.bankruptAssets.contains(assetId))
+            throw new IllegalArgumentException("Asset is bankrupt: " + assetId);
+        if (amount <= 0 || amount > human.cash)
+            throw new IllegalArgumentException("Invalid amount: " + amount);
+
+        double price  = state.prices.getOrDefault(assetId, 0.0);
+        double shares = amount / price;
+        human.cash -= amount;
+
+        PositionState pos = human.portfolio.computeIfAbsent(assetId,
+            k -> new PositionState(assetId, 0, price));
+        double newShares  = pos.shares + shares;
+        pos.avgCost       = (pos.shares * pos.avgCost + amount) / newShares;
+        pos.shares        = newShares;
+
+        state.log.add(0, new LogEntry("buy",
+            String.format("%s bought $%,.0f of %s", human.name, amount, assetId.toUpperCase())));
+
+        recalcNetWorths(state);
+        return toDTO(state);
+    }
+
+    public GameStateDTO humanSell(String gameId, String assetId, double pct) {
+        GameState state = getState(gameId);
+        PlayerState human = state.players.get(0);
+
+        PositionState pos = human.portfolio.get(assetId);
+        if (pos == null || pos.shares <= 0)
+            throw new IllegalArgumentException("No position in: " + assetId);
+
+        double sharesToSell = pos.shares * (pct / 100.0);
+        double price        = state.prices.getOrDefault(assetId, 0.0);
+        double proceeds     = sharesToSell * price;
+
+        human.cash += proceeds;
+        pos.shares -= sharesToSell;
+        if (pos.shares < 0.0001) human.portfolio.remove(assetId);
+
+        state.log.add(0, new LogEntry("sell",
+            String.format("%s sold %.0f%% of %s for $%,.0f",
+                human.name, pct, assetId.toUpperCase(), proceeds)));
+
+        recalcNetWorths(state);
+        return toDTO(state);
+    }
+
+    // ── Price engine ─────────────────────────────────────────────────────────────
+
+    private void applyPrices(GameState state, EventDTO event) {
+        state.prevPrices = new HashMap<>(state.prices);
+        Map<String, Double> effects = event.getEffects() != null ? event.getEffects() : Map.of();
+
+        AssetRegistry.ALL_ASSETS.forEach(a -> {
+            if (state.bankruptAssets.contains(a.id())) return;
+            double baseChange = effects.getOrDefault(a.id(), 0.0);
+            double noise      = (Math.random() * 2 - 1) * a.volatility() * 0.35;
+            double change     = Math.max(-0.48, Math.min(0.65, baseChange + noise));
+            double newPrice   = Math.max(0.5, state.prices.getOrDefault(a.id(), a.basePrice()) * (1 + change));
+            state.prices.put(a.id(), newPrice);
+        });
+
+        // Bankruptcy rolls
+        Map<String, Double> bRisk = event.getBankruptRisk() != null ? event.getBankruptRisk() : Map.of();
+        bRisk.forEach((assetId, prob) -> {
+            AssetRegistry.AssetDef a = AssetRegistry.find(assetId);
+            if (a == null || !a.canBankrupt() || state.bankruptAssets.contains(assetId)) return;
+            if (Math.random() < prob) {
+                double prevPrice = state.prevPrices.getOrDefault(assetId, 0.0);
+                state.bankruptAssets.add(assetId);
+                state.prices.put(assetId, 0.0);
+                log.warn("[GameService] BANKRUPT: {} game={}", assetId, state.id);
+
+                // Wipe all player holdings
+                state.players.forEach(p -> {
+                    PositionState pos = p.portfolio.remove(assetId);
+                    if (pos != null) {
+                        double lost = pos.shares * prevPrice;
+                        state.log.add(0, new LogEntry("bankrupt",
+                            String.format("☠ %s BANKRUPT — %s lost $%,.0f",
+                                assetId.toUpperCase(), p.name, lost)));
+                    }
+                });
+            }
+        });
+    }
+
+    // ── AI player execution ───────────────────────────────────────────────────────
+
+    private void runAIPlayers(GameState state, EventDTO event) {
+        List<PlayerState> aiPlayers = state.players.stream()
+            .filter(p -> p.isAI)
+            .collect(Collectors.toList());
+
+        // Run AI players in parallel (each is independent)
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<Future<Void>> futures = aiPlayers.stream()
+                .map(p -> executor.<Void>submit(() -> { runOneAIPlayer(state, p, event); return null; }))
+                .toList();
+
+            for (Future<Void> f : futures) {
+                try { f.get(60, TimeUnit.SECONDS); }
+                catch (Exception e) {
+                    log.warn("[GameService] AI player task failed: {}", e.getMessage());
+                }
+            }
+        }
+    }
+
+    private void runOneAIPlayer(GameState state, PlayerState player, EventDTO event) {
+        // Build portfolio value map
+        Map<String, Double> portfolioValues = player.portfolio.entrySet().stream()
+            .filter(e -> !state.bankruptAssets.contains(e.getKey()))
+            .collect(Collectors.toMap(
+                Map.Entry::getKey,
+                e -> e.getValue().shares * state.prices.getOrDefault(e.getKey(), 0.0)
+            ));
+
+        // Price changes this quarter
+        Map<String, Double> changes = state.prices.entrySet().stream()
+            .collect(Collectors.toMap(
+                Map.Entry::getKey,
+                e -> {
+                    double prev = state.prevPrices.getOrDefault(e.getKey(), e.getValue());
+                    return prev > 0 ? (e.getValue() - prev) / prev : 0;
+                }
+            ));
+
+        // Bankrupt map
+        Map<String, Boolean> bankruptMap = state.bankruptAssets.stream()
+            .collect(Collectors.toMap(id -> id, id -> true));
+
+        AIPlayerDecision decision = aiPlayerAgent.decide(
+            player.archetypeId,
+            player.name,
+            player.cash,
+            player.netWorth,
+            portfolioValues,
+            state.prices,
+            changes,
+            bankruptMap,
+            event.getName(),
+            event.getSeverity(),
+            event.getFlavor(),
+            event.getEffects() != null ? event.getEffects() : Map.of(),
+            state.quarter,
+            state.year
+        );
+
+        // Log reasoning
+        if (decision.getReasoning() != null) {
+            state.log.add(0, new LogEntry("ai",
+                player.name + ": " + decision.getReasoning()));
+        }
+
+        // Execute trades
+        for (AIPlayerDecision.AITradeAction trade : decision.getTrades()) {
+            switch (trade.getAction()) {
+                case BUY  -> executeBuy(state, player, trade);
+                case SELL -> executeSell(state, player, trade);
+                case HOLD -> log.debug("[AI] {} holds", player.name);
+            }
+        }
+    }
+
+    private void executeBuy(GameState state, PlayerState player,
+                              AIPlayerDecision.AITradeAction trade) {
+        String assetId = trade.getAssetId();
+        double amount  = trade.getAmountUsd() != null ? trade.getAmountUsd() : 0;
+        if (assetId == null || amount <= 0 || amount > player.cash) return;
+        if (state.bankruptAssets.contains(assetId)) return;
+        double price = state.prices.getOrDefault(assetId, 0.0);
+        if (price <= 0) return;
+
+        double shares = amount / price;
+        player.cash  -= amount;
+        PositionState pos = player.portfolio.computeIfAbsent(assetId,
+            k -> new PositionState(k, 0, price));
+        double ns    = pos.shares + shares;
+        pos.avgCost  = (pos.shares * pos.avgCost + amount) / ns;
+        pos.shares   = ns;
+
+        state.log.add(0, new LogEntry("ai",
+            String.format("%s BUY %s $%,.0f — %s",
+                player.name, assetId.toUpperCase(), amount,
+                trade.getRationale() != null ? trade.getRationale() : "")));
+    }
+
+    private void executeSell(GameState state, PlayerState player,
+                               AIPlayerDecision.AITradeAction trade) {
+        String assetId = trade.getAssetId();
+        double pct     = trade.getSellPct() != null ? trade.getSellPct() : 100.0;
+        if (assetId == null) return;
+        PositionState pos = player.portfolio.get(assetId);
+        if (pos == null || pos.shares <= 0) return;
+
+        double ss    = pos.shares * (pct / 100.0);
+        double price = state.prices.getOrDefault(assetId, 0.0);
+        player.cash += ss * price;
+        pos.shares  -= ss;
+        if (pos.shares < 0.0001) player.portfolio.remove(assetId);
+
+        state.log.add(0, new LogEntry("ai",
+            String.format("%s SELL %.0f%% %s — %s",
+                player.name, pct, assetId.toUpperCase(),
+                trade.getRationale() != null ? trade.getRationale() : "")));
+    }
+
+    // ── Income / dividend payments ────────────────────────────────────────────────
+
+    private void payIncome(GameState state) {
+        state.players.forEach(p -> {
+            double[] income = { p.cash * 0.0025 }; // cash interest
+            p.portfolio.forEach((id, pos) -> {
+                if (state.bankruptAssets.contains(id)) return;
+                AssetRegistry.AssetDef a = AssetRegistry.find(id);
+                if (a == null || a.dividendRate() <= 0) return;
+                double div = pos.shares * state.prices.getOrDefault(id, 0.0) * a.dividendRate();
+                income[0] += div;
+                p.totalIncome += div;
+            });
+            p.cash       += income[0];
+            p.totalIncome += p.cash * 0.0025;
+            if (income[0] > 50) state.log.add(new LogEntry("income",
+                String.format("%s received $%,.0f in income & dividends", p.name, income[0])));
+        });
+    }
+
+    private void recalcNetWorths(GameState state) {
+        state.players.forEach(p -> {
+            double w = p.cash;
+            for (var entry : p.portfolio.entrySet()) {
+                if (!state.bankruptAssets.contains(entry.getKey())) {
+                    w += entry.getValue().shares
+                        * state.prices.getOrDefault(entry.getKey(), 0.0);
+                }
+            }
+            p.netWorth = w;
+        });
+    }
+
+    // ── Macro context rotation ────────────────────────────────────────────────────
+
+    private static final List<String> MACRO_CONTEXTS = List.of(
+        "global trade war escalating with broad tariff hikes",
+        "a global pandemic is emerging, borders are closing",
+        "global supply chains are severely disrupted",
+        "the US dollar is weakening significantly",
+        "global interest rates are rising sharply",
+        "a global recession is being forecast",
+        "inflation is running hot across major economies",
+        "war has broken out in Europe threatening energy supplies",
+        "China-Taiwan strait tensions are at a 20-year high",
+        "China is cracking down on its domestic technology sector",
+        "the US Federal Reserve is cutting interest rates",
+        "strong US corporate earnings are beating expectations",
+        "China is announcing major economic stimulus measures",
+        "Japan is ending its negative interest rate policy",
+        "AI investment is surging globally",
+        "green energy transition policy is accelerating",
+        "commodity prices are surging on supply shocks",
+        "OPEC announces surprise production cuts"
+    );
+    private int macroIdx = 0;
+
+    private String pickMacroContext(GameState state) {
+        // Rotate through contexts — not purely random, maintains some narrative flow
+        return MACRO_CONTEXTS.get((macroIdx++) % MACRO_CONTEXTS.size());
+    }
+
+    private String buildConstraints(GameState state) {
+        // Tell EventAgent what to avoid based on recent history
+        if (state.eventHistory.size() < 2) return "no constraints";
+        String recent = state.eventHistory.stream().limit(3)
+            .map(e -> e.getSeverity()).collect(Collectors.joining(", "));
+        boolean tooManySevere = state.eventHistory.stream().limit(3)
+            .filter(e -> "severe".equals(e.getSeverity())).count() >= 2;
+        return tooManySevere
+            ? "recent events have been severe — please generate a mild or moderate event"
+            : "vary the geography and sectors from recent events (" + recent + ")";
+    }
+
+    // ── State helpers ─────────────────────────────────────────────────────────────
+
+    private GameState getState(String gameId) {
+        GameState s = games.get(gameId);
+        if (s == null) throw new IllegalArgumentException("Game not found: " + gameId);
+        return s;
+    }
+
+    private GameStateDTO toDTO(GameState state) {
+        // Map internal state to API DTO
+        return GameStateDTO.builder()
+            .gameId(state.id)
+            .quarter(state.quarter)
+            .year(state.year)
+            .gameOver(state.gameOver)
+            .winnerId(state.winnerId)
+            .currentEvent(state.currentEvent)
+            .prices(state.prices)
+            .prevPrices(state.prevPrices)
+            .bankruptAssets(new ArrayList<>(state.bankruptAssets))
+            .players(state.players.stream().map(this::playerToDTO).toList())
+            .log(state.log.stream().limit(50).map(e -> new GameStateDTO.LogEntryDTO(e.type(), e.msg())).toList())
+            .build();
+    }
+
+    private GameStateDTO.PlayerDTO playerToDTO(PlayerState p) {
+        return GameStateDTO.PlayerDTO.builder()
+            .id(p.id).name(p.name).isAI(p.isAI)
+            .archetypeId(p.archetypeId).color(p.color)
+            .cash(p.cash).netWorth(p.netWorth).totalIncome(p.totalIncome)
+            .portfolio(p.portfolio.entrySet().stream()
+                .collect(Collectors.toMap(
+                    Map.Entry::getKey,
+                    e -> new GameStateDTO.PositionDTO(e.getValue().shares, e.getValue().avgCost)
+                )))
+            .build();
+    }
+
+    // ── Inner state classes ───────────────────────────────────────────────────────
+
+    static class GameState {
+        String id; int quarter = 1; int year = 1;
+        boolean gameOver = false; String winnerId;
+        List<PlayerState>  players     = new ArrayList<>();
+        Map<String, Double> prices     = new HashMap<>();
+        Map<String, Double> prevPrices = new HashMap<>();
+        Set<String> bankruptAssets     = new HashSet<>();
+        EventDTO currentEvent;
+        List<EventDTO> eventHistory    = new ArrayList<>();
+        List<LogEntry> log             = new ArrayList<>();
+
+        GameState(String id, String humanName, List<String> aiIds) {
+            this.id = id;
+            // Init prices
+            AssetRegistry.ALL_ASSETS.forEach(a -> prices.put(a.id(), a.basePrice()));
+            prevPrices = new HashMap<>(prices);
+            // Human player
+            players.add(new PlayerState("human", humanName, false, null, "#2D6A5A"));
+            // AI players
+            aiIds.forEach(archId -> {
+                AIPlayerArchetype arch = AIPlayerArchetype.fromId(archId);
+                PlayerState p = new PlayerState(archId, arch.getDisplayName(),
+                    true, archId, arch.getColor());
+                // Pre-invest according to archetype preference
+                initialInvest(p, arch, prices);
+                players.add(p);
+            });
+        }
+
+        private void initialInvest(PlayerState p, AIPlayerArchetype arch,
+                                    Map<String, Double> prices) {
+            double each = 80000.0 / Math.min(arch.getPreferredAssets().size(), 4);
+            int count = 0;
+            for (String id : arch.getPreferredAssets()) {
+                if (count >= 4) break;
+                double price = prices.getOrDefault(id, 100.0);
+                double shares = each / price;
+                p.portfolio.put(id, new PositionState(id, shares, price));
+                p.cash -= each;
+                count++;
+            }
+        }
+    }
+
+    static class PlayerState {
+        String id, name, archetypeId, color;
+        boolean isAI;
+        double cash = 100_000, netWorth = 100_000, totalIncome = 0;
+        Map<String, PositionState> portfolio = new LinkedHashMap<>();
+
+        PlayerState(String id, String name, boolean isAI, String archetypeId, String color) {
+            this.id = id; this.name = name; this.isAI = isAI;
+            this.archetypeId = archetypeId; this.color = color;
+        }
+    }
+
+    static class PositionState {
+        String id; double shares, avgCost;
+        PositionState(String id, double shares, double avgCost) {
+            this.id = id; this.shares = shares; this.avgCost = avgCost;
+        }
+    }
+
+    record LogEntry(String type, String msg) {}
+}
