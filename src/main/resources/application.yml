@@ -107,17 +107,6 @@ llm:
         - openai
         - anthropic
 
-    coach-agent:
-      provider: anthropic
-      model: claude-haiku-4-5-20251001
-      temperature: 0.5
-      max-tokens: 200
-      timeout-seconds: 10
-      retries: 1
-      fallback-chain:
-        - deepseek
-        - ollama
-
     ai-player-agent:
       provider: ollama
       model: llama3.2
