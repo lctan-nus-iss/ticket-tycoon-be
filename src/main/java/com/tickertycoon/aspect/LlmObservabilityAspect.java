@@ -2,7 +2,7 @@ package com.tickertycoon.aspect;
 
 import com.tickertycoon.port.LlmRequest;
 import com.tickertycoon.port.LlmResponse;
-import lombok.extern.slf4j.Slf4j;
+import lombok.extern.log4j.Log4j2;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
@@ -11,7 +11,7 @@ import java.util.Map;
 
 @Aspect
 @Component
-@Slf4j
+@Log4j2
 public class LlmObservabilityAspect {
 
     /** Cost in USD per 1M tokens: [inputPrice, outputPrice] */

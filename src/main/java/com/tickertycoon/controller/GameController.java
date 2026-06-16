@@ -6,6 +6,8 @@ import com.tickertycoon.agent.DebriefAgent;
 import com.tickertycoon.dto.*;
 import com.tickertycoon.service.GameService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.log4j.Log4j2;
+
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
@@ -14,6 +16,7 @@ import java.util.*;
 @RestController
 @RequestMapping("/api/game")
 @RequiredArgsConstructor
+@Log4j2
 public class GameController {
 
     private final GameService   gameService;
@@ -22,6 +25,9 @@ public class GameController {
 
     @PostMapping("/start")
     public ResponseEntity<GameStateDTO> startGame(@RequestBody StartGameRequest req) {
+        log.info("Starting game with {} human players and AI archetypes {}",
+                req.getHumanPlayers(), req.getAiArchetypeIds());
+
         return ResponseEntity.ok(
             gameService.startGame(req.getHumanPlayers(), req.getAiArchetypeIds()));
     }

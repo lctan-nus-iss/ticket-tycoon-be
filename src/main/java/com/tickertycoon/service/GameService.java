@@ -5,7 +5,7 @@ import com.tickertycoon.dto.EventDTO;
 import com.tickertycoon.dto.GameStateDTO;
 import com.tickertycoon.dto.StartGameRequest;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import lombok.extern.log4j.Log4j2;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -22,7 +22,7 @@ import java.util.stream.Collectors;
  */
 @Service
 @RequiredArgsConstructor
-@Slf4j
+@Log4j2
 public class GameService {
 
     private final EventAgent     eventAgent;
@@ -363,11 +363,10 @@ public class GameService {
         "commodity prices are surging on supply shocks",
         "OPEC announces surprise production cuts"
     );
-    private int macroIdx = 0;
 
     private String pickMacroContext(GameState state) {
         // Rotate through contexts — not purely random, maintains some narrative flow
-        return MACRO_CONTEXTS.get((macroIdx++) % MACRO_CONTEXTS.size());
+        return MACRO_CONTEXTS.get((state.macroIdx++) % MACRO_CONTEXTS.size());
     }
 
     private String buildConstraints(GameState state) {
@@ -453,6 +452,23 @@ public class GameService {
             .prices(state.prices)
             .prevPrices(state.prevPrices)
             .bankruptAssets(new ArrayList<>(state.bankruptAssets))
+            .marketAssets(AssetRegistry.ALL_ASSETS.stream()
+                .map(a -> GameStateDTO.MarketAssetDTO.builder()
+                    .id(a.id())
+                    .name(a.name())
+                    .ticker(a.ticker())
+                    .group(a.group())
+                    .sector(a.sector())
+                    .region(a.region())
+                    .basePrice(a.basePrice())
+                    .volatility(a.volatility())
+                    .dividendRate(a.dividendRate())
+                    .canBankrupt(a.canBankrupt())
+                    .currentPrice(state.prices.getOrDefault(a.id(), a.basePrice()))
+                    .previousPrice(state.prevPrices.getOrDefault(a.id(), a.basePrice()))
+                    .bankrupt(state.bankruptAssets.contains(a.id()))
+                    .build())
+                .toList())
             .players(state.players.stream().map(this::playerToDTO).toList())
             .log(state.log.stream().limit(50).map(e -> new GameStateDTO.LogEntryDTO(e.type(), e.msg())).toList())
             .build();
@@ -483,6 +499,7 @@ public class GameService {
         EventDTO currentEvent;
         List<EventDTO> eventHistory    = new ArrayList<>();
         List<LogEntry> log             = new ArrayList<>();
+        int macroIdx = 0;
 
         GameState(String id, List<HumanPlayerSetup> humanPlayers, List<String> aiIds) {
             this.id = id;

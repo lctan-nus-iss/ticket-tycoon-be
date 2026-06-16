@@ -5,7 +5,7 @@ import com.tickertycoon.port.LlmPort;
 import com.tickertycoon.port.LlmRequest;
 import com.tickertycoon.port.LlmResponse;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import lombok.extern.log4j.Log4j2;
 import org.springframework.ai.anthropic.AnthropicChatModel;
 import org.springframework.ai.anthropic.AnthropicChatOptions;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -23,7 +23,7 @@ import java.util.List;
 @Component("anthropic")
 @ConditionalOnProperty("llm.providers.anthropic.api-key")
 @RequiredArgsConstructor
-@Slf4j
+@Log4j2
 public class AnthropicAdapter implements LlmPort {
 
     private final LlmProperties      props;

@@ -5,12 +5,12 @@ import com.tickertycoon.dto.EventDTO;
 import com.tickertycoon.port.LlmRequest;
 import com.tickertycoon.router.LlmRouter;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import lombok.extern.log4j.Log4j2;
 import org.springframework.stereotype.Component;
 
 @Component
 @RequiredArgsConstructor
-@Slf4j
+@Log4j2
 public class EventAgent {
 
     private final LlmRouter    llm;
@@ -52,19 +52,19 @@ public class EventAgent {
             bankruptRisk only for stocks/REITs, max 0.4, only when severely negative.
             """.formatted(quarter, year, macroContext, recentEventNames, constraints);
 
-        var resp = llm.complete(LlmRequest.builder()
-            .agentName("event-agent")
-            .systemPrompt(SYSTEM_PROMPT)
-            .userPrompt(userPrompt)
-            .build());
-
         try {
+            var resp = llm.complete(LlmRequest.builder()
+                .agentName("event-agent")
+                .systemPrompt(SYSTEM_PROMPT)
+                .userPrompt(userPrompt)
+                .build());
+
             String clean = resp.getText().replaceAll("```json|```", "").trim();
             EventDTO event = mapper.readValue(clean, EventDTO.class);
             event.setGeneratedBy(resp.getProvider() + "/" + resp.getModel());
             return event;
         } catch (Exception e) {
-            log.error("[EventAgent] Failed to parse event JSON: {}", e.getMessage());
+            log.error("[EventAgent] Failed to generate event from LLM; using fallback. cause={}", e.getMessage());
             return EventDTO.fallback();
         }
     }

@@ -4,7 +4,7 @@ import com.tickertycoon.config.LlmProperties;
 import com.tickertycoon.port.LlmPort;
 import com.tickertycoon.port.LlmRequest;
 import com.tickertycoon.port.LlmResponse;
-import lombok.extern.slf4j.Slf4j;
+import lombok.extern.log4j.Log4j2;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -20,7 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 @Component("deepseek")
-@Slf4j
+@Log4j2
 public class DeepSeekAdapter implements LlmPort {
 
     private final LlmProperties   props;

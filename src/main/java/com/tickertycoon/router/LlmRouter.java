@@ -7,7 +7,7 @@ import com.tickertycoon.port.LlmRequest;
 import com.tickertycoon.port.LlmResponse;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import lombok.extern.log4j.Log4j2;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import java.util.*;
@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit;
 
 @Component
 @RequiredArgsConstructor
-@Slf4j
+@Log4j2
 public class LlmRouter implements LlmPort {
 
     /** All LlmPort beans keyed by their @Component name */
