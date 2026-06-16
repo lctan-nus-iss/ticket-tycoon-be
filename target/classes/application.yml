@@ -1,29 +1,49 @@
 spring:
   application:
     name: ticker-tycoon-backend
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+      - org.springframework.ai.model.anthropic.autoconfigure.AnthropicChatAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiChatAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioSpeechAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioTranscriptionAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiEmbeddingAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiImageAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiModerationAutoConfiguration
+      - org.springframework.ai.model.ollama.autoconfigure.OllamaChatAutoConfiguration
+  cloud:
+    config:
+      enabled: false
+    compatibility-verifier:
+      enabled: false
   ai:
-    anthropic:
-      api-key: ${ANTHROPIC_API_KEY}
-    openai:
-      api-key: ${OPENAI_API_KEY:}
-    ollama:
-      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
-  datasource:
-    url: jdbc:postgresql://localhost:5432/tickertycoon
-    username: ${DB_USERNAME:postgres}
-    password: ${DB_PASSWORD:postgres}
-  jpa:
-    hibernate:
-      ddl-auto: update
-    show-sql: false
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: true
-  data:
-    redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
+#    anthropic:
+#      api-key: ${ANTHROPIC_API_KEY}
+#    openai:
+#      api-key: ${OPENAI_API_KEY:}
+    deepseek:
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
+#    ollama:
+#      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+  # datasource:
+  #   url: jdbc:postgresql://localhost:5432/tickertycoon
+  #   username: ${DB_USERNAME:postgres}
+  #   password: ${DB_PASSWORD:postgres}
+  # jpa:
+  #   hibernate:
+  #     ddl-auto: update
+  #   show-sql: false
+  #   properties:
+  #     hibernate:
+  #       dialect: org.hibernate.dialect.PostgreSQLDialect
+  #       format_sql: true
+  # data:
+  #   redis:
+  #     host: ${REDIS_HOST:localhost}
+  #     port: ${REDIS_PORT:6379}
   web:
     cors:
       allowed-origins: "http://localhost:5173,http://localhost:3000"
@@ -44,36 +64,36 @@ management:
 
 llm:
   providers:
-    anthropic:
-      base-url: https://api.anthropic.com
-      api-key: ${ANTHROPIC_API_KEY}
-      default-model: claude-haiku-4-5-20251001
-      timeout-seconds: 30
-
-    openai:
-      base-url: https://api.openai.com
-      api-key: ${OPENAI_API_KEY:}
-      default-model: gpt-4o-mini
-      timeout-seconds: 30
-
-    gemini:
-      base-url: https://generativelanguage.googleapis.com
-      api-key: ${GEMINI_API_KEY:}
-      default-model: gemini-2.0-flash
-      timeout-seconds: 30
-
+#     anthropic:
+#       base-url: https://api.anthropic.com
+#       api-key: ${ANTHROPIC_API_KEY}
+#       default-model: claude-haiku-4-5-20251001
+#       timeout-seconds: 30
+#
+#     openai:
+#       base-url: https://api.openai.com
+#       api-key: ${OPENAI_API_KEY:}
+#       default-model: gpt-4o-mini
+#       timeout-seconds: 30
+#
+#     gemini:
+#       base-url: https://generativelanguage.googleapis.com
+#       api-key: ${GEMINI_API_KEY:}
+#       default-model: gemini-2.0-flash
+#       timeout-seconds: 30
+#
     deepseek:
-      base-url: https://api.deepseek.com
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
       api-key: ${DEEPSEEK_API_KEY:}
       default-model: deepseek-chat
       timeout-seconds: 40
-
-    ollama:
-      base-url: http://localhost:11434
-      api-key: ""
-      default-model: llama3.2
-      timeout-seconds: 60
-
+#
+#     ollama:
+#       base-url: http://localhost:11434
+#       api-key: ""
+#       default-model: llama3.2
+#       timeout-seconds: 60
+#
   agents:
     event-agent:
       provider: deepseek
@@ -82,19 +102,16 @@ llm:
       max-tokens: 800
       timeout-seconds: 25
       retries: 2
-      fallback-chain:
-        - anthropic
-        - ollama
+      fallback-chain: []
 
     advisor-agent:
-      provider: anthropic
-      model: claude-sonnet-4-20250514
+      provider: deepseek
+      model: deepseek-chat
       temperature: 0.4
       max-tokens: 1200
       timeout-seconds: 45
       retries: 1
-      fallback-chain:
-        - openai
+      fallback-chain: []
 
     narrator-agent:
       provider: deepseek
@@ -103,20 +120,16 @@ llm:
       max-tokens: 400
       timeout-seconds: 15
       retries: 2
-      fallback-chain:
-        - openai
-        - anthropic
+      fallback-chain: []
 
     ai-player-agent:
-      provider: ollama
-      model: llama3.2
+      provider: deepseek
+      model: deepseek-chat
       temperature: 0.7
       max-tokens: 500
       timeout-seconds: 30
       retries: 0
-      fallback-chain:
-        - deepseek
-        - anthropic
+      fallback-chain: []
 
     debrief-agent:
       provider: deepseek
@@ -125,26 +138,25 @@ llm:
       max-tokens: 2000
       timeout-seconds: 90
       retries: 1
-      fallback-chain:
-        - anthropic
+      fallback-chain: []
 
-    calibration-agent:
-      provider: gemini
-      model: gemini-2.0-flash
-      temperature: 0.2
-      max-tokens: 600
-      timeout-seconds: 20
-      retries: 2
-      fallback-chain:
-        - deepseek
-        - anthropic
-
-    risk-referee-agent:
-      provider: deepseek
-      model: deepseek-chat
-      temperature: 0.2
-      max-tokens: 400
-      timeout-seconds: 15
-      retries: 2
-      fallback-chain:
-        - anthropic
+#     calibration-agent:
+#       provider: gemini
+#       model: gemini-2.0-flash
+#       temperature: 0.2
+#       max-tokens: 600
+#       timeout-seconds: 20
+#       retries: 2
+#       fallback-chain:
+#         - deepseek
+#         - anthropic
+#
+#     risk-referee-agent:
+#       provider: deepseek
+#       model: deepseek-chat
+#       temperature: 0.2
+#       max-tokens: 400
+#       timeout-seconds: 15
+#       retries: 2
+#       fallback-chain:
+#         - anthropic

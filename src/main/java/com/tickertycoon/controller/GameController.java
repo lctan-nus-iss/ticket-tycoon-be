@@ -87,6 +87,6 @@ public class GameController {
     public ResponseEntity<Map<String, Object>> providers() {
         return ResponseEntity.ok(Map.of(
             "status",    "ok",
-            "providers", List.of("anthropic","openai","gemini","deepseek","ollama")));
+            "providers", List.of("deepseek")));
     }
 }

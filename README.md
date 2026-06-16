@@ -393,25 +393,25 @@ llm:
       max-tokens: 800
       timeout-seconds: 25
       retries: 2
-      fallback-chain: [anthropic, ollama]
+      fallback-chain: []
 
     ai-player-agent:
-      provider: ollama
-      model: llama3.2
+      provider: deepseek
+      model: deepseek-chat
       temperature: 0.7
       max-tokens: 500
       timeout-seconds: 30
       retries: 0
-      fallback-chain: [deepseek, anthropic]
+      fallback-chain: []
 
     advisor-agent:
-      provider: anthropic
-      model: claude-sonnet-4-20250514
+      provider: deepseek
+      model: deepseek-chat
       temperature: 0.4
       max-tokens: 1200
       timeout-seconds: 45
       retries: 1
-      fallback-chain: [openai]
+      fallback-chain: []
 
     narrator-agent:
       provider: deepseek
@@ -420,7 +420,7 @@ llm:
       max-tokens: 400
       timeout-seconds: 15
       retries: 2
-      fallback-chain: [openai, anthropic]
+      fallback-chain: []
 
     debrief-agent:
       provider: deepseek
@@ -429,19 +429,14 @@ llm:
       max-tokens: 2000
       timeout-seconds: 90
       retries: 1
-      fallback-chain: [anthropic]
+      fallback-chain: []
 ```
 
 **Required environment variables:**
 
 | Variable | Purpose |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API access |
-| `OPENAI_API_KEY` | OpenAI API access |
 | `DEEPSEEK_API_KEY` | DeepSeek API access |
-| `GEMINI_API_KEY` | Google Gemini API access |
-| `DB_USERNAME` | PostgreSQL username |
-| `DB_PASSWORD` | PostgreSQL password |
 
 ---
 

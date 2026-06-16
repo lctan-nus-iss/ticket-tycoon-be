@@ -6,6 +6,7 @@ import com.tickertycoon.port.LlmPort;
 import com.tickertycoon.port.LlmRequest;
 import com.tickertycoon.port.LlmResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
@@ -14,6 +15,7 @@ import java.time.Duration;
 import java.util.*;
 
 @Component("gemini")
+@ConditionalOnProperty("llm.providers.gemini.api-key")
 @RequiredArgsConstructor
 public class GeminiAdapter implements LlmPort {
 
