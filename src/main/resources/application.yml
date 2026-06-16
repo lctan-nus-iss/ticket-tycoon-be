@@ -1,6 +1,13 @@
 spring:
   application:
     name: ticker-tycoon-backend
+  ai:
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY}
+    openai:
+      api-key: ${OPENAI_API_KEY:}
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
   datasource:
     url: jdbc:postgresql://localhost:5432/tickertycoon
     username: ${DB_USERNAME:postgres}
