@@ -34,6 +34,7 @@ public class GameController {
 
     @PostMapping("/{gameId}/advance")
     public ResponseEntity<GameStateDTO> advanceQuarter(@PathVariable String gameId) {
+        log.info("Advancing game {} to next quarter", gameId);
         return ResponseEntity.ok(gameService.advanceQuarter(gameId));
     }
 

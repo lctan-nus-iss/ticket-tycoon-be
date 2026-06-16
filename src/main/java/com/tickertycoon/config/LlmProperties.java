@@ -19,6 +19,7 @@ public class LlmProperties {
     public static class ProviderConfig {
         private String baseUrl;
         private String apiKey;
+        private String apiKeyFile;
         private String defaultModel;
         private int    timeoutSeconds = 30;
     }

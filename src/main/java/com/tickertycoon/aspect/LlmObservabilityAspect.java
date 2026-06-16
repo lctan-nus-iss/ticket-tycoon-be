@@ -34,10 +34,10 @@ public class LlmObservabilityAspect {
         double cost = (resp.getInputTokens()  / 1_000_000.0 * price[0])
                     + (resp.getOutputTokens() / 1_000_000.0 * price[1]);
 
-        log.info("[LLM_COST] agent={} provider={} model={} in_tokens={} out_tokens={} latency_ms={} estimated_usd={:.6f}",
+        log.info("[LLM_COST] agent={} provider={} model={} in_tokens={} out_tokens={} latency_ms={} estimated_usd={}",
             req.getAgentName(), resp.getProvider(), resp.getModel(),
             resp.getInputTokens(), resp.getOutputTokens(),
-            resp.getLatencyMs(), cost);
+            resp.getLatencyMs(), String.format("%.6f", cost));
 
         return resp;
     }
