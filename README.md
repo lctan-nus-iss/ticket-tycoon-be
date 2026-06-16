@@ -81,7 +81,8 @@ The aim of creating this financial game to educate people about investing, manag
 | Runtime | Java 25, Spring Boot 3.5.15 |
 | Web | Spring MVC + Spring WebFlux (streaming) |
 | Async | Virtual Threads (`Executors.newVirtualThreadPerTaskExecutor`) |
-| HTTP Client | Spring WebClient (reactive) |
+| LLM Abstraction | Spring AI 1.0.0 (Anthropic, OpenAI, Ollama chat models) |
+| HTTP Client | Spring WebClient (reactive, used for Gemini adapter) |
 | Caching | Redis (prompt response caching) |
 | Metrics | Micrometer + Prometheus |
 | AOP | Spring AOP (LLM observability aspect) |
@@ -260,13 +261,13 @@ Central dispatcher implementing `LlmPort`. Every agent calls `llmRouter.complete
 
 Five adapters, each implementing `LlmPort` and registered as a named Spring `@Component`:
 
-| Component Name | Provider | API Format | Notes |
+| Component Name | Provider | Client | Notes |
 |---|---|---|---|
-| `anthropic` | Anthropic | `/v1/messages` | Extracts `reasoning_content` from extended-thinking models |
-| `openai` | OpenAI | `/v1/chat/completions` | Standard OpenAI chat format |
-| `deepseek` | DeepSeek | `/v1/chat/completions` | Extracts R1 `reasoning_content` for reasoner models |
-| `gemini` | Google Gemini | `/v1beta/models/{model}:generateContent` | Custom `parts`/`contents` request structure |
-| `ollama` | Ollama (local) | `/api/chat` | Uses `num_predict` instead of `max_tokens` |
+| `anthropic` | Anthropic | Spring AI `AnthropicChatModel` | Uses `AnthropicChatOptions` per request |
+| `openai` | OpenAI | Spring AI `OpenAiChatModel` | Uses `OpenAiChatOptions` per request |
+| `deepseek` | DeepSeek | Spring AI `OpenAiChatModel` (qualified bean, custom base URL) | OpenAI-compatible API; forces temperature=1.0 for reasoner models |
+| `gemini` | Google Gemini | Spring WebClient | Direct HTTP; Spring AI Gemini requires Vertex AI auth |
+| `ollama` | Ollama (local) | Spring AI `OllamaChatModel` | Uses `OllamaOptions` with `numPredict` |
 
 All adapters map the provider-agnostic `LlmRequest` to the provider's wire format and map the response back to `LlmResponse`.
 
