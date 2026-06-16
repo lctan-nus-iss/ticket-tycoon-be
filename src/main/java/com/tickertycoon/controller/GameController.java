@@ -23,7 +23,7 @@ public class GameController {
     @PostMapping("/start")
     public ResponseEntity<GameStateDTO> startGame(@RequestBody StartGameRequest req) {
         return ResponseEntity.ok(
-            gameService.startGame(req.getHumanName(), req.getAiArchetypeIds()));
+            gameService.startGame(req.getHumanPlayers(), req.getAiArchetypeIds()));
     }
 
     @PostMapping("/{gameId}/advance")
@@ -35,14 +35,14 @@ public class GameController {
     public ResponseEntity<GameStateDTO> buy(
             @PathVariable String gameId, @RequestBody TradeRequest req) {
         return ResponseEntity.ok(
-            gameService.humanBuy(gameId, req.getAssetId(), req.getAmount()));
+            gameService.humanBuy(gameId, req.getPlayerId(), req.getAssetId(), req.getAmount()));
     }
 
     @PostMapping("/{gameId}/sell")
     public ResponseEntity<GameStateDTO> sell(
             @PathVariable String gameId, @RequestBody TradeRequest req) {
         return ResponseEntity.ok(
-            gameService.humanSell(gameId, req.getAssetId(), req.getPct()));
+            gameService.humanSell(gameId, req.getPlayerId(), req.getAssetId(), req.getPct()));
     }
 
     @PostMapping("/{gameId}/analyse/{playerId}")

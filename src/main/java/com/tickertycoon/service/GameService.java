@@ -3,6 +3,7 @@ package com.tickertycoon.service;
 import com.tickertycoon.agent.*;
 import com.tickertycoon.dto.EventDTO;
 import com.tickertycoon.dto.GameStateDTO;
+import com.tickertycoon.dto.StartGameRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -32,9 +33,10 @@ public class GameService {
 
     // ── Start game ──────────────────────────────────────────────────────────────
 
-    public GameStateDTO startGame(String humanName, List<String> aiArchetypeIds) {
+    public GameStateDTO startGame(List<StartGameRequest.HumanPlayerRequest> humanPlayers,
+                                  List<String> aiArchetypeIds) {
         String gameId = UUID.randomUUID().toString();
-        GameState state = new GameState(gameId, humanName, aiArchetypeIds);
+        GameState state = new GameState(gameId, buildHumanPlayers(humanPlayers), aiArchetypeIds);
         games.put(gameId, state);
         log.info("[GameService] Started game {} with {} players", gameId, state.players.size());
         return toDTO(state);
@@ -95,9 +97,9 @@ public class GameService {
 
     // ── Human player trades ──────────────────────────────────────────────────────
 
-    public GameStateDTO humanBuy(String gameId, String assetId, double amount) {
+    public GameStateDTO humanBuy(String gameId, String playerId, String assetId, double amount) {
         GameState state = getState(gameId);
-        PlayerState human = state.players.get(0);
+        PlayerState human = findHumanPlayer(state, playerId);
 
         if (state.bankruptAssets.contains(assetId))
             throw new IllegalArgumentException("Asset is bankrupt: " + assetId);
@@ -121,9 +123,9 @@ public class GameService {
         return toDTO(state);
     }
 
-    public GameStateDTO humanSell(String gameId, String assetId, double pct) {
+    public GameStateDTO humanSell(String gameId, String playerId, String assetId, double pct) {
         GameState state = getState(gameId);
-        PlayerState human = state.players.get(0);
+        PlayerState human = findHumanPlayer(state, playerId);
 
         PositionState pos = human.portfolio.get(assetId);
         if (pos == null || pos.shares <= 0)
@@ -388,6 +390,57 @@ public class GameService {
         return s;
     }
 
+    private List<HumanPlayerSetup> buildHumanPlayers(List<StartGameRequest.HumanPlayerRequest> requestedHumans) {
+        if (requestedHumans == null || requestedHumans.isEmpty()) {
+            return List.of(new HumanPlayerSetup("human-1", "Player 1", HUMAN_COLORS.get(0)));
+        }
+
+        Set<String> ids = new HashSet<>();
+        List<HumanPlayerSetup> humans = new ArrayList<>();
+        for (int i = 0; i < requestedHumans.size(); i++) {
+            StartGameRequest.HumanPlayerRequest req = requestedHumans.get(i);
+            String id = cleanId(req.getId(), "human-" + (i + 1));
+            if (!ids.add(id)) throw new IllegalArgumentException("Duplicate human player id: " + id);
+
+            String name = cleanName(req.getName(), "Player " + (i + 1));
+            String color = cleanColor(req.getColor(), HUMAN_COLORS.get(i % HUMAN_COLORS.size()));
+            humans.add(new HumanPlayerSetup(id, name, color));
+        }
+        return humans;
+    }
+
+    private PlayerState findHumanPlayer(GameState state, String playerId) {
+        if (playerId == null || playerId.isBlank()) {
+            return state.players.stream()
+                .filter(p -> !p.isAI)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("No human players in game"));
+        }
+
+        return state.players.stream()
+            .filter(p -> !p.isAI && p.id.equals(playerId))
+            .findFirst()
+            .orElseThrow(() -> new IllegalArgumentException("Human player not found: " + playerId));
+    }
+
+    private static final List<String> HUMAN_COLORS = List.of(
+        "#2D6A5A", "#6B4EFF", "#D97706", "#0E7490", "#BE123C", "#4D7C0F"
+    );
+
+    private String cleanId(String value, String fallback) {
+        String raw = value == null || value.isBlank() ? fallback : value.trim();
+        String id = raw.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]+", "-").replaceAll("(^-|-$)", "");
+        return id.isBlank() ? fallback : id;
+    }
+
+    private String cleanName(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value.trim();
+    }
+
+    private String cleanColor(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value.trim();
+    }
+
     private GameStateDTO toDTO(GameState state) {
         // Map internal state to API DTO
         return GameStateDTO.builder()
@@ -431,17 +484,21 @@ public class GameService {
         List<EventDTO> eventHistory    = new ArrayList<>();
         List<LogEntry> log             = new ArrayList<>();
 
-        GameState(String id, String humanName, List<String> aiIds) {
+        GameState(String id, List<HumanPlayerSetup> humanPlayers, List<String> aiIds) {
             this.id = id;
             // Init prices
             AssetRegistry.ALL_ASSETS.forEach(a -> prices.put(a.id(), a.basePrice()));
             prevPrices = new HashMap<>(prices);
-            // Human player
-            players.add(new PlayerState("human", humanName, false, null, "#2D6A5A"));
+
+            humanPlayers.forEach(h ->
+                players.add(new PlayerState(h.id(), h.name(), false, null, h.color())));
+
             // AI players
-            aiIds.forEach(archId -> {
+            Set<String> usedIds = players.stream().map(p -> p.id).collect(Collectors.toSet());
+            List<String> safeAiIds = aiIds != null ? aiIds : List.of();
+            safeAiIds.forEach(archId -> {
                 AIPlayerArchetype arch = AIPlayerArchetype.fromId(archId);
-                PlayerState p = new PlayerState(archId, arch.getDisplayName(),
+                PlayerState p = new PlayerState(uniquePlayerId(archId, usedIds), arch.getDisplayName(),
                     true, archId, arch.getColor());
                 // Pre-invest according to archetype preference
                 initialInvest(p, arch, prices);
@@ -461,6 +518,17 @@ public class GameService {
                 p.cash -= each;
                 count++;
             }
+        }
+
+        private String uniquePlayerId(String baseId, Set<String> usedIds) {
+            if (usedIds.add(baseId)) return baseId;
+            int suffix = 2;
+            String candidate = baseId + "-" + suffix;
+            while (!usedIds.add(candidate)) {
+                suffix++;
+                candidate = baseId + "-" + suffix;
+            }
+            return candidate;
         }
     }
 
@@ -484,4 +552,5 @@ public class GameService {
     }
 
     record LogEntry(String type, String msg) {}
+    record HumanPlayerSetup(String id, String name, String color) {}
 }

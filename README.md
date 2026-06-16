@@ -171,7 +171,7 @@ Five specialised agents, each responsible for a distinct role in the game loop. 
 
 **File:** `agent/AdvisorAgent.java`
 
-**Role:** Provides personalised, educational portfolio analysis to the human player on demand.
+**Role:** Provides personalised, educational portfolio analysis to human players on demand.
 
 **How it works:**
 - Receives the player's full portfolio (positions, cash, net worth, trade history), current asset prices, and game context.
@@ -287,7 +287,7 @@ Human starts game
        ▼
   Game ends → DebriefAgent called
 
-── During each quarter, human player may ──
+── During each quarter, human players may ──
   POST /buy or /sell
        │
        └──► AdvisorAgent (on demand, sync or streaming)
@@ -301,10 +301,10 @@ Base path: `/api/game`
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/start` | Start a new game. Body: `{ humanName, aiArchetypeIds[] }` |
+| `POST` | `/start` | Start a new game. Body: `{ humanPlayers: [{ id, name, color }], aiArchetypeIds[] }`. If `humanPlayers` is omitted, the game starts with a default `Player 1`. |
 | `POST` | `/{gameId}/advance` | Advance to the next quarter (runs EventAgent + AIPlayerAgents + NarratorAgent) |
-| `POST` | `/{gameId}/buy` | Human player buys an asset. Body: `TradeRequest` |
-| `POST` | `/{gameId}/sell` | Human player sells an asset. Body: `TradeRequest` |
+| `POST` | `/{gameId}/buy` | Human player buys an asset. Body: `{ playerId, assetId, amount }`. If `playerId` is omitted, the primary human player is used. |
+| `POST` | `/{gameId}/sell` | Human player sells an asset. Body: `{ playerId, assetId, pct }`. If `playerId` is omitted, the primary human player is used. |
 | `POST` | `/{gameId}/analyse/{playerId}` | Request synchronous portfolio analysis (AdvisorAgent) |
 | `GET` | `/{gameId}/analyse/{playerId}/stream` | Request streaming portfolio analysis (SSE) |
 | `POST` | `/{gameId}/debrief/{playerId}` | Request post-game debrief (DebriefAgent) |
