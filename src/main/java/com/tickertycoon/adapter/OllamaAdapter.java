@@ -1,68 +1,77 @@
 package com.tickertycoon.adapter;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.tickertycoon.config.LlmProperties;
 import com.tickertycoon.port.LlmPort;
 import com.tickertycoon.port.LlmRequest;
 import com.tickertycoon.port.LlmResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.ollama.OllamaChatModel;
+import org.springframework.ai.ollama.api.OllamaOptions;
 import org.springframework.stereotype.Component;
-import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
-import java.time.Duration;
-import java.util.*;
+
+import java.util.ArrayList;
+import java.util.List;
 
 @Component("ollama")
 @RequiredArgsConstructor
 public class OllamaAdapter implements LlmPort {
 
-    private final LlmProperties     props;
-    private final WebClient.Builder  webClientBuilder;
+    private final LlmProperties  props;
+    private final OllamaChatModel chatModel;
 
     @Override
     public LlmResponse complete(LlmRequest req) {
-        long start = System.currentTimeMillis();
+        long start   = System.currentTimeMillis();
         var agentCfg = props.getAgents().get(req.getAgentName());
-        var provCfg  = props.getProviders().get("ollama");
 
-        List<Map<String, String>> messages = new ArrayList<>();
-        if (req.getSystemPrompt() != null)
-            messages.add(Map.of("role", "system", "content", req.getSystemPrompt()));
-        if (req.getHistory() != null)
-            req.getHistory().forEach(h -> messages.add(Map.of("role", h.getRole(), "content", h.getContent())));
-        messages.add(Map.of("role", "user", "content", req.getUserPrompt()));
-
-        JsonNode raw = webClientBuilder.build()
-            .post()
-            .uri(provCfg.getBaseUrl() + "/api/chat")
-            .header("Content-Type", "application/json")
-            .bodyValue(Map.of(
-                "model",    agentCfg.getModel(),
-                "stream",   false,
-                "messages", messages,
-                "options",  Map.of(
-                    "temperature", req.getTemperature() != null ? req.getTemperature() : agentCfg.getTemperature(),
-                    "num_predict", req.getMaxTokens()   != null ? req.getMaxTokens()   : agentCfg.getMaxTokens()
-                )
-            ))
-            .retrieve()
-            .bodyToMono(JsonNode.class)
-            .timeout(Duration.ofSeconds(agentCfg.getTimeoutSeconds()))
-            .block();
+        var response = chatModel.call(buildPrompt(req, agentCfg));
+        var meta     = response.getMetadata();
+        var usage    = meta.getUsage();
 
         return LlmResponse.builder()
-            .text(raw.path("message").path("content").asText())
+            .text(response.getResult().getOutput().getText())
             .model(agentCfg.getModel())
             .provider("ollama")
-            .inputTokens(raw.path("prompt_eval_count").asInt())
-            .outputTokens(raw.path("eval_count").asInt())
+            .inputTokens(usage.getPromptTokens().intValue())
+            .outputTokens(usage.getCompletionTokens().intValue())
             .latencyMs(System.currentTimeMillis() - start)
             .build();
     }
 
     @Override
     public Flux<String> stream(LlmRequest req) {
-        // Simplified: wrap blocking call
-        return Flux.just(complete(req).getText());
+        var agentCfg = props.getAgents().get(req.getAgentName());
+        return chatModel.stream(buildPrompt(req, agentCfg))
+            .mapNotNull(cr -> cr.getResult() != null
+                ? cr.getResult().getOutput().getText() : null)
+            .filter(t -> t != null && !t.isEmpty());
+    }
+
+    private Prompt buildPrompt(LlmRequest req, LlmProperties.AgentConfig cfg) {
+        List<Message> messages = new ArrayList<>();
+        if (req.getSystemPrompt() != null)
+            messages.add(new SystemMessage(req.getSystemPrompt()));
+        if (req.getHistory() != null) {
+            req.getHistory().forEach(h -> {
+                if ("assistant".equals(h.getRole()))
+                    messages.add(new AssistantMessage(h.getContent()));
+                else
+                    messages.add(new UserMessage(h.getContent()));
+            });
+        }
+        messages.add(new UserMessage(req.getUserPrompt()));
+
+        var options = OllamaOptions.builder()
+            .model(cfg.getModel())
+            .temperature(req.getTemperature() != null ? req.getTemperature() : cfg.getTemperature())
+            .numPredict(req.getMaxTokens() != null ? req.getMaxTokens() : cfg.getMaxTokens())
+            .build();
+        return new Prompt(messages, options);
     }
 }
