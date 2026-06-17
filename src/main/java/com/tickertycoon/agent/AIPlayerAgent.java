@@ -168,7 +168,7 @@ public class AIPlayerAgent {
 
         AIPlayerDecision decision = new AIPlayerDecision();
         decision.setTrades(trades);
-        decision.setReasoning("Rule-based decision (LLM disabled)");
+        decision.setReasoning("Making strategic moves based on market conditions.");
         return decision;
     }
 

@@ -8,8 +8,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.beans.factory.config.ConfigurableBeanFactory;
-import org.springframework.context.annotation.Scope;
 import org.springframework.stereotype.Service;
 
 import com.tickertycoon.agent.EventAgent;
@@ -19,7 +17,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
 
 @Service
-@Scope(ConfigurableBeanFactory.SCOPE_SINGLETON)
 @RequiredArgsConstructor
 @Log4j2
 public class EventPoolService {
@@ -67,10 +64,13 @@ public class EventPoolService {
             return;
         }
 
-        log.info("[EventPoolService] Starting event pool warmup with targetSize={} refillThreshold={}",
+        log.info("[EventPoolService] Starting async event pool warmup with targetSize={} refillThreshold={}",
             targetSize, refillThreshold);
-        replenishPool("startup", targetSize);
-        log.info("[EventPoolService] Startup warmup complete, pool size={}", preGeneratedEvents.size());
+        // Run warmup on the async executor so application startup is not blocked by LLM calls
+        taskExecutor.execute(() -> {
+            replenishPool("startup", targetSize);
+            log.info("[EventPoolService] Startup warmup complete, pool size={}", preGeneratedEvents.size());
+        });
     }
 
     public EventDTO getNextEvent(int quarter, int year, String macroContext,
@@ -80,7 +80,7 @@ public class EventPoolService {
             return eventAgent.generateFreshEvent(quarter, year, macroContext, recentEventNames, constraints);
         }
 
-        EventDTO cached = pollPreGeneratedEvent();
+        EventDTO cached = pollFromQueue();
         if (cached != null) {
             log.info("[EventPoolService] Serving cached event '{}'", cached.getName());
             scheduleRefillIfNeeded();
@@ -90,7 +90,7 @@ public class EventPoolService {
         log.warn("[EventPoolService] Pool empty during request, doing blocking refill before serving event");
         replenishPool("blocking request refill", Math.max(refillThreshold + 1, 1));
 
-        cached = pollPreGeneratedEvent();
+        cached = pollFromQueue();
         if (cached != null) {
             log.info("[EventPoolService] Serving cached event '{}' after blocking refill", cached.getName());
             scheduleRefillIfNeeded();
@@ -99,25 +99,6 @@ public class EventPoolService {
 
         log.warn("[EventPoolService] Blocking refill produced no cached events, falling back to direct generation");
         return eventAgent.generateFreshEvent(quarter, year, macroContext, recentEventNames, constraints);
-    }
-
-    public EventDTO pollPreGeneratedEvent() {
-        if (!enabled) {
-            return null;
-        }
-
-        int beforeSize = preGeneratedEvents.size();
-        
-        log.info("[EventPoolService] Dispensing pre-generated event '{}' (before={}, remaining={})", beforeSize, preGeneratedEvents.size());
-
-        EventDTO cached = preGeneratedEvents.poll();
-        if (cached != null) {
-            log.info("[EventPoolService] Dispensing pre-generated event '{}' (before={}, remaining={})",
-                cached.getName(), beforeSize, preGeneratedEvents.size());
-        } else {
-            log.info("[EventPoolService] No cached event available to dispense (poolSize={})", beforeSize);
-        }
-        return cached;
     }
 
     public int getPoolSize() {
@@ -140,7 +121,23 @@ public class EventPoolService {
         return refillThreshold;
     }
 
-    public void scheduleRefillIfNeeded() {
+    private EventDTO pollFromQueue() {
+        if (!enabled) {
+            return null;
+        }
+
+        int beforeSize = preGeneratedEvents.size();
+        EventDTO cached = preGeneratedEvents.poll();
+        if (cached != null) {
+            log.info("[EventPoolService] Dispensing pre-generated event '{}' (before={}, remaining={})",
+                cached.getName(), beforeSize, preGeneratedEvents.size());
+        } else {
+            log.info("[EventPoolService] No cached event available to dispense (poolSize={})", beforeSize);
+        }
+        return cached;
+    }
+
+    private void scheduleRefillIfNeeded() {
         if (!enabled || preGeneratedEvents.size() > refillThreshold) {
             return;
         }
@@ -162,6 +159,8 @@ public class EventPoolService {
 
             log.info("[EventPoolService] Replenishing {} event(s) for {}", missing, reason);
             for (int i = 0; i < missing; i++) {
+                // Synthetic quarter/year are used only to give the LLM temporal variety during
+                // pre-generation; actual game context is not available at pool-fill time.
                 int sequence = preGeneratedEvents.size() + i;
                 int quarter = (sequence % 4) + 1;
                 int year = (sequence / 4) + 1;
