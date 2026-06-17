@@ -3,3 +3,4 @@ target/
 .github/
 ds-key
 runApp.sh
+runAppWin.bat
