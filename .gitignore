@@ -2,3 +2,4 @@
 target/
 .github/
 ds-key
+runApp.sh
