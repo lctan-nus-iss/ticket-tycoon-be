@@ -4,6 +4,7 @@ import com.tickertycoon.agent.AIPlayerArchetype;
 import com.tickertycoon.agent.AdvisorAgent;
 import com.tickertycoon.agent.DebriefAgent;
 import com.tickertycoon.dto.*;
+import com.tickertycoon.service.EventPoolService;
 import com.tickertycoon.service.GameService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
@@ -20,6 +21,7 @@ import java.util.*;
 public class GameController {
 
     private final GameService   gameService;
+    private final EventPoolService eventPoolService;
     private final AdvisorAgent  advisorAgent;
     private final DebriefAgent  debriefAgent;
 
@@ -95,5 +97,16 @@ public class GameController {
         return ResponseEntity.ok(Map.of(
             "status",    "ok",
             "providers", List.of("deepseek")));
+    }
+
+    @GetMapping("/event-pool")
+    public ResponseEntity<Map<String, Object>> eventPoolStatus() {
+        return ResponseEntity.ok(Map.of(
+            "enabled", eventPoolService.isEnabled(),
+            "poolSize", eventPoolService.getPoolSize(),
+            "targetSize", eventPoolService.getTargetSize(),
+            "refillThreshold", eventPoolService.getRefillThreshold(),
+            "replenishing", eventPoolService.isReplenishing()
+        ));
     }
 }

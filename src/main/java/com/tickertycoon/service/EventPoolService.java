@@ -1,23 +1,25 @@
 package com.tickertycoon.service;
 
-import com.tickertycoon.agent.EventAgent;
-import com.tickertycoon.dto.EventDTO;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.log4j.Log4j2;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Service;
-
 import java.util.List;
 import java.util.Queue;
-import java.util.concurrent.Executor;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.config.ConfigurableBeanFactory;
+import org.springframework.context.annotation.Scope;
+import org.springframework.stereotype.Service;
+
+import com.tickertycoon.agent.EventAgent;
+import com.tickertycoon.dto.EventDTO;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.log4j.Log4j2;
+
 @Service
+@Scope(ConfigurableBeanFactory.SCOPE_SINGLETON)
 @RequiredArgsConstructor
 @Log4j2
 public class EventPoolService {
@@ -59,33 +61,83 @@ public class EventPoolService {
     @Value("${ticker-tycoon.event-pool.refill-threshold:4}")
     private int refillThreshold;
 
-    @EventListener(ApplicationReadyEvent.class)
-    @Async
-    public void warmPoolOnStartup() {
+    public void startOnApplicationStartup() {
         if (!enabled) {
             log.info("[EventPoolService] Startup event pool warmup disabled");
             return;
         }
 
-        replenishPool("startup");
+        log.info("[EventPoolService] Starting event pool warmup with targetSize={} refillThreshold={}",
+            targetSize, refillThreshold);
+        replenishPool("startup", targetSize);
+        log.info("[EventPoolService] Startup warmup complete, pool size={}", preGeneratedEvents.size());
     }
 
-    public EventDTO nextEvent(int quarter, int year, String macroContext,
-                              String recentEventNames, String constraints) {
-        EventDTO cached = enabled ? preGeneratedEvents.poll() : null;
+    public EventDTO getNextEvent(int quarter, int year, String macroContext,
+                                 String recentEventNames, String constraints) {
+        if (!enabled) {
+            log.info("[EventPoolService] Event pool disabled, generating event directly for Q{}Y{}", quarter, year);
+            return eventAgent.generateFreshEvent(quarter, year, macroContext, recentEventNames, constraints);
+        }
+
+        EventDTO cached = pollPreGeneratedEvent();
         if (cached != null) {
-            log.info("[EventPoolService] Using pre-generated event '{}' (remaining={})",
-                cached.getName(), preGeneratedEvents.size());
+            log.info("[EventPoolService] Serving cached event '{}'", cached.getName());
             scheduleRefillIfNeeded();
             return cached;
         }
 
-        log.info("[EventPoolService] Pool empty, generating event on demand");
-        return eventAgent.generateNext(quarter, year, macroContext, recentEventNames, constraints);
+        log.warn("[EventPoolService] Pool empty during request, doing blocking refill before serving event");
+        replenishPool("blocking request refill", Math.max(refillThreshold + 1, 1));
+
+        cached = pollPreGeneratedEvent();
+        if (cached != null) {
+            log.info("[EventPoolService] Serving cached event '{}' after blocking refill", cached.getName());
+            scheduleRefillIfNeeded();
+            return cached;
+        }
+
+        log.warn("[EventPoolService] Blocking refill produced no cached events, falling back to direct generation");
+        return eventAgent.generateFreshEvent(quarter, year, macroContext, recentEventNames, constraints);
+    }
+
+    public EventDTO pollPreGeneratedEvent() {
+        if (!enabled) {
+            return null;
+        }
+
+        int beforeSize = preGeneratedEvents.size();
+        
+        log.info("[EventPoolService] Dispensing pre-generated event '{}' (before={}, remaining={})", beforeSize, preGeneratedEvents.size());
+
+        EventDTO cached = preGeneratedEvents.poll();
+        if (cached != null) {
+            log.info("[EventPoolService] Dispensing pre-generated event '{}' (before={}, remaining={})",
+                cached.getName(), beforeSize, preGeneratedEvents.size());
+        } else {
+            log.info("[EventPoolService] No cached event available to dispense (poolSize={})", beforeSize);
+        }
+        return cached;
     }
 
     public int getPoolSize() {
         return preGeneratedEvents.size();
+    }
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public boolean isReplenishing() {
+        return replenishing.get();
+    }
+
+    public int getTargetSize() {
+        return targetSize;
+    }
+
+    public int getRefillThreshold() {
+        return refillThreshold;
     }
 
     public void scheduleRefillIfNeeded() {
@@ -93,16 +145,17 @@ public class EventPoolService {
             return;
         }
 
-        taskExecutor.execute(() -> replenishPool("refill"));
+        taskExecutor.execute(() -> replenishPool("refill", targetSize));
     }
 
-    private void replenishPool(String reason) {
+    private void replenishPool(String reason, int desiredSize) {
         if (!replenishing.compareAndSet(false, true)) {
+            log.info("[EventPoolService] Refill already in progress, skipping {}", reason);
             return;
         }
 
         try {
-            int missing = Math.max(0, targetSize - preGeneratedEvents.size());
+            int missing = Math.max(0, desiredSize - preGeneratedEvents.size());
             if (missing == 0) {
                 return;
             }
@@ -114,7 +167,7 @@ public class EventPoolService {
                 int year = (sequence / 4) + 1;
                 String macroContext = STARTUP_MACRO_CONTEXTS.get(sequence % STARTUP_MACRO_CONTEXTS.size());
 
-                EventDTO event = eventAgent.generateNext(
+                EventDTO event = eventAgent.generateFreshEvent(
                     quarter,
                     year,
                     macroContext,
