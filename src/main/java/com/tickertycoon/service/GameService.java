@@ -1,6 +1,8 @@
 package com.tickertycoon.service;
 
-import com.tickertycoon.agent.*;
+import com.tickertycoon.agent.AIPlayerAgent;
+import com.tickertycoon.agent.AIPlayerArchetype;
+import com.tickertycoon.agent.AIPlayerDecision;
 import com.tickertycoon.dto.EventDTO;
 import com.tickertycoon.dto.GameStateDTO;
 import com.tickertycoon.dto.StartGameRequest;
@@ -25,8 +27,8 @@ import java.util.stream.Collectors;
 @Log4j2
 public class GameService {
 
-    private final EventAgent     eventAgent;
-    private final AIPlayerAgent  aiPlayerAgent;
+    private final EventPoolService eventPoolService;
+    private final AIPlayerAgent   aiPlayerAgent;
 
     // In-memory game state (replace with JPA repository in production)
     private final Map<String, GameState> games = new ConcurrentHashMap<>();
@@ -52,7 +54,7 @@ public class GameService {
         String recentEvents = state.eventHistory.stream()
             .limit(6).map(e -> e.getName()).collect(Collectors.joining(", "));
 
-        EventDTO event = eventAgent.generateNext(
+        EventDTO event = eventPoolService.nextEvent(
             state.quarter, state.year,
             pickMacroContext(state),
             recentEvents,
