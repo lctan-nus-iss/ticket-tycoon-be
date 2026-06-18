@@ -19,6 +19,7 @@ The aim of creating this financial game to educate people about investing, manag
   - [AdvisorAgent](#advisoragent)
   - [DebriefAgent](#debriefagent)
   - [AI Player Archetypes](#ai-player-archetypes)
+- [Event Pool](#event-pool)
 - [LLM Integration Layer](#llm-integration-layer)
   - [LlmRouter](#llmrouter)
   - [Adapters](#adapters)
@@ -42,16 +43,18 @@ The aim of creating this financial game to educate people about investing, manag
                              │
 ┌────────────────────────────▼────────────────────────────────┐
 │                      Service Layer                           │
-│                       GameService                            │
+│              GameService · EventPoolService                   │
 │          In-memory game state · ConcurrentHashMap            │
 └──────┬──────┬──────┬──────┬──────┬──────────────────────────┘
        │      │      │      │      │
   ┌────▼─┐ ┌──▼──┐ ┌─▼───┐ ┌▼────┐ ┌▼──────┐
   │Event │ │AIPlr│ │Narr-│ │Advi-│ │Debrief│
   │Agent │ │Agent│ │ator │ │sor  │ │Agent  │
-  └──────┘ └─────┘ └─────┘ └─────┘ └───────┘
-       │      │      │      │      │
-       └──────┴──────┴──────┴──────┘
+  │(LLM) │ │(rule│ │(LLM)│ │(LLM)│ │(LLM)  │
+  └──────┘ │based│ └─────┘ └─────┘ └───────┘
+           └─────┘
+       │             │      │      │
+       └─────────────┴──────┴──────┘
                           │
               ┌───────────▼───────────┐
               │       LlmRouter       │
@@ -103,7 +106,7 @@ src/main/java/com/tickertycoon/
 ├── exception/                     # Custom exceptions
 ├── port/                          # LlmPort interface + LlmRequest/Response
 ├── router/                        # LlmRouter (central dispatcher)
-├── service/                       # GameService + AssetRegistry
+├── service/                       # GameService + AssetRegistry + EventPoolService
 └── aspect/                        # LlmObservabilityAspect (AOP)
 ```
 
@@ -135,18 +138,16 @@ Five specialised agents, each responsible for a distinct role in the game loop. 
 
 **File:** `agent/AIPlayerAgent.java`
 
-**Role:** Decides the trades each AI player makes every quarter, simulating distinct investor personalities.
+**Role:** Decides the trades each AI player makes every quarter, simulating distinct investor personalities using pure rule-based logic (no LLM).
 
 **How it works:**
-- Receives the AI player's archetype system prompt, current portfolio, available cash, current prices, the quarter's event summary, and win-progress context.
-- Returns a list of `AIPlayerDecision.Trade` objects (`BUY asset amount` or `SELL asset percentage`).
-- All AI players are executed **in parallel** using virtual threads.
-- Validates every returned trade: caps BUY to 95% of available cash, clamps SELL to 1–100%, skips bankrupt assets, limits to 4 trades per turn.
-- Falls back to a rule-based heuristic if the LLM call fails or JSON parsing errors.
+- Receives the AI player's archetype, current portfolio, available cash, current prices, price changes, event effects, and bankruptcy flags.
+- Scores preferred assets using event effects and recent price momentum, then buys the highest-scoring one up to 15% of net worth per turn.
+- Clears bankrupt positions first, then deploys up to 80% of available cash into preferred assets.
+- Falls back to a HOLD action if no trades are warranted.
+- All returned trades pass through `validateAndSanitise`: caps BUY to 95% of remaining cash (min $100), clamps SELL to 1–100%, skips bankrupt assets, limits to 4 trades per turn.
 
-**Primary provider:** Ollama (local)  
-**Fallback chain:** DeepSeek → Anthropic  
-**Output:** `List<AIPlayerDecision.Trade>`
+**Output:** `AIPlayerDecision` (list of `AITradeAction` with BUY / SELL / HOLD)
 
 ---
 
@@ -221,6 +222,34 @@ Seven personality archetypes, each with a distinct investment philosophy encoded
 
 ---
 
+## Event Pool
+
+**File:** `service/EventPoolService.java`
+
+Pre-generates market events asynchronously so that `advanceQuarter` never has to wait on an LLM call to produce an event.
+
+**How it works:**
+
+1. On application startup, `startOnApplicationStartup()` submits a warmup job to the async executor, pre-filling the pool with `targetSize` events (default: 12) using 18 rotating macro-context scenarios.
+2. When `getNextEvent(...)` is called by `GameService`, it tries to poll a ready event from the `ConcurrentLinkedQueue`.
+3. If the queue drops to or below `refillThreshold` (default: 4), an async refill is triggered in the background.
+4. If the queue is empty at request time, a **blocking refill** runs before serving the event. If that also fails, the call falls through directly to `EventAgent.generateFreshEvent(...)`.
+5. A single `AtomicBoolean` flag prevents concurrent refill runs.
+
+**Configuration (application.yml):**
+
+```yaml
+ticker-tycoon:
+  event-pool:
+    enabled: true          # set false to bypass pool and call EventAgent directly
+    target-size: 12        # events to maintain in the pool
+    refill-threshold: 4    # trigger async refill when pool drops to this level
+```
+
+**Observability:** pool state is exposed via `GET /api/game/event-pool` (see [REST API](#rest-api)).
+
+---
+
 ## LLM Integration Layer
 
 ### LlmRouter
@@ -263,7 +292,8 @@ Human starts game
   └────┬────┘                               │
        │                                    │
        ▼                                    │
-  EventAgent generates market event         │
+  EventPoolService serves pre-generated event│
+  (falls back to EventAgent if pool empty)  │
        │                                    │
        ▼                                    │
   Prices updated (event effects + noise)    │
@@ -271,7 +301,7 @@ Human starts game
        │                                    │
        ▼                                    │
   AIPlayerAgent runs for each AI player     │
-  (parallel virtual threads)                │
+  (rule-based, no LLM)                      │
        │                                    │
        ▼                                    │
   NarratorAgent generates news excerpt      │
@@ -310,6 +340,7 @@ Base path: `/api/game`
 | `POST` | `/{gameId}/debrief/{playerId}` | Request post-game debrief (DebriefAgent) |
 | `GET` | `/archetypes` | List all available AI archetypes |
 | `GET` | `/providers` | List all configured LLM providers |
+| `GET` | `/event-pool` | Event pool status: enabled, poolSize, targetSize, refillThreshold, replenishing |
 
 ---
 
