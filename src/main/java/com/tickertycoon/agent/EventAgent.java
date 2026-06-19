@@ -1,19 +1,21 @@
 package com.tickertycoon.agent;
 
+import org.springframework.stereotype.Component;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tickertycoon.dto.EventDTO;
 import com.tickertycoon.port.LlmRequest;
 import com.tickertycoon.router.LlmRouter;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
-import org.springframework.stereotype.Component;
 
 @Component
 @RequiredArgsConstructor
 @Log4j2
 public class EventAgent {
 
-    private final LlmRouter    llm;
+    private final LlmRouter llm;
     private final ObjectMapper mapper;
 
     private static final String SYSTEM_PROMPT = """
@@ -24,8 +26,8 @@ public class EventAgent {
         Always respond with valid JSON only — no markdown, no explanation.
         """;
 
-    public EventDTO generateNext(int quarter, int year, String macroContext,
-                                  String recentEventNames, String constraints) {
+    public EventDTO generateFreshEvent(int quarter, int year, String macroContext,
+                                       String recentEventNames, String constraints) {
         String userPrompt = """
             Quarter: Q%d Year %d
             Macro backdrop: %s

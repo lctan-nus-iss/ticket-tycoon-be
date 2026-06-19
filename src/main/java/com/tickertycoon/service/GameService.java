@@ -1,16 +1,31 @@
 package com.tickertycoon.service;
 
-import com.tickertycoon.agent.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+import org.springframework.stereotype.Service;
+
+import com.tickertycoon.agent.AIPlayerAgent;
+import com.tickertycoon.agent.AIPlayerArchetype;
+import com.tickertycoon.agent.AIPlayerDecision;
 import com.tickertycoon.dto.EventDTO;
 import com.tickertycoon.dto.GameStateDTO;
 import com.tickertycoon.dto.StartGameRequest;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
-import org.springframework.stereotype.Service;
-
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.stream.Collectors;
 
 /**
  * Core turn engine. Orchestrates:
@@ -25,8 +40,8 @@ import java.util.stream.Collectors;
 @Log4j2
 public class GameService {
 
-    private final EventAgent     eventAgent;
-    private final AIPlayerAgent  aiPlayerAgent;
+    private final EventPoolService eventPoolService;
+    private final AIPlayerAgent aiPlayerAgent;
 
     // In-memory game state (replace with JPA repository in production)
     private final Map<String, GameState> games = new ConcurrentHashMap<>();
@@ -48,11 +63,13 @@ public class GameService {
         GameState state = getState(gameId);
         if (state.gameOver) throw new IllegalStateException("Game is already over");
 
+        log.info("[GameService] advanceQuarter requested for game={} currentQ{}Y{} poolSizeBefore={}",
+            gameId, state.quarter, state.year, eventPoolService.getPoolSize());
+
         // 1. Generate market event
         String recentEvents = state.eventHistory.stream()
             .limit(6).map(e -> e.getName()).collect(Collectors.joining(", "));
-
-        EventDTO event = eventAgent.generateNext(
+        EventDTO event = eventPoolService.getNextEvent(
             state.quarter, state.year,
             pickMacroContext(state),
             recentEvents,
@@ -60,8 +77,8 @@ public class GameService {
         );
         state.currentEvent = event;
         state.eventHistory.add(0, event);
-        log.info("[GameService] game={} Q{}Y{} event={} ({})",
-            gameId, state.quarter, state.year, event.getName(), event.getSeverity());
+        log.info("[GameService] game={} Q{}Y{} event={} ({}) poolSizeAfter={}",
+            gameId, state.quarter, state.year, event.getName(), event.getSeverity(), eventPoolService.getPoolSize());
 
         // 2. Apply price changes + bankruptcy checks
         applyPrices(state, event);
