@@ -15,14 +15,24 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import com.tickertycoon.agent.AIPlayerAgent;
 import com.tickertycoon.agent.AIPlayerArchetype;
 import com.tickertycoon.agent.AIPlayerDecision;
+import com.tickertycoon.document.GameStateDocument;
+import com.tickertycoon.document.GameStateRepository;
 import com.tickertycoon.dto.EventDTO;
 import com.tickertycoon.dto.GameStateDTO;
 import com.tickertycoon.dto.StartGameRequest;
+import com.tickertycoon.entity.GameEntity;
+import com.tickertycoon.entity.GamePlayerEntity;
+import com.tickertycoon.entity.GameResultEntity;
+import com.tickertycoon.entity.GameStatus;
+import com.tickertycoon.repository.GamePlayerRepository;
+import com.tickertycoon.repository.GameRepository;
+import com.tickertycoon.repository.GameResultRepository;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
@@ -42,19 +52,80 @@ public class GameService {
 
     private final EventPoolService eventPoolService;
     private final AIPlayerAgent aiPlayerAgent;
+    private final GameRepository gameRepository;
+    private final GamePlayerRepository gamePlayerRepository;
+    private final GameResultRepository gameResultRepository;
+    private final GameStateRepository gameStateRepository;
 
-    // In-memory game state (replace with JPA repository in production)
+    @Value("${ticker-tycoon.games.max-active:50}")
+    private int maxActiveGames;
+
+    @Value("${ticker-tycoon.games.max-players:6}")
+    private int maxPlayersPerGame;
+
+    // Active engine cache; durable state lives in Postgres (roster/lifecycle) + Mongo (live state)
     private final Map<String, GameState> games = new ConcurrentHashMap<>();
 
     // ── Start game ──────────────────────────────────────────────────────────────
 
     public GameStateDTO startGame(List<StartGameRequest.HumanPlayerRequest> humanPlayers,
                                   List<String> aiArchetypeIds) {
+        long activeGames = gameRepository.countByStatusIn(List.of(GameStatus.WAITING, GameStatus.ACTIVE));
+        if (activeGames >= maxActiveGames) {
+            throw new IllegalStateException("Maximum number of active games (" + maxActiveGames + ") reached");
+        }
+
+        List<HumanPlayerSetup> humans = buildHumanPlayers(humanPlayers);
+        List<String> safeAiIds = aiArchetypeIds != null ? aiArchetypeIds : List.of();
+        int totalPlayers = humans.size() + safeAiIds.size();
+        if (totalPlayers > maxPlayersPerGame) {
+            throw new IllegalArgumentException(
+                "A game allows at most " + maxPlayersPerGame + " players, got " + totalPlayers);
+        }
+
         String gameId = UUID.randomUUID().toString();
-        GameState state = new GameState(gameId, buildHumanPlayers(humanPlayers), aiArchetypeIds);
+        GameState state = new GameState(gameId, humans, safeAiIds);
         games.put(gameId, state);
         log.info("[GameService] Started game {} with {} players", gameId, state.players.size());
+
+        persistNewGame(state);
+        writeThrough(state);
+
         return toDTO(state);
+    }
+
+    private void persistNewGame(GameState state) {
+        GameEntity entity = new GameEntity(state.id, "Game " + state.id.substring(0, 8), maxPlayersPerGame);
+        entity.setStatus(GameStatus.ACTIVE);
+        entity.setStartedAt(java.time.Instant.now());
+        gameRepository.save(entity);
+
+        int seat = 1;
+        for (PlayerState p : state.players) {
+            gamePlayerRepository.save(new GamePlayerEntity(
+                state.id, p.id, seat++, p.isAI, p.archetypeId, p.name, p.color));
+        }
+    }
+
+    private void writeThrough(GameState state) {
+        gameStateRepository.save(GameStateDocument.fromDTO(toDTO(state)));
+
+        if (state.gameOver) {
+            gameRepository.findById(state.id).ifPresent(g -> {
+                g.setStatus(GameStatus.FINISHED);
+                g.setFinishedAt(java.time.Instant.now());
+                gameRepository.save(g);
+            });
+            List<PlayerState> ranked = state.players.stream()
+                .sorted((a, b) -> Double.compare(b.netWorth, a.netWorth))
+                .toList();
+            for (int i = 0; i < ranked.size(); i++) {
+                PlayerState p = ranked.get(i);
+                gameResultRepository.save(new GameResultEntity(
+                    state.id, p.id, p.netWorth, i + 1,
+                    p.id.equals(state.winnerId), state.year * 4 + state.quarter));
+            }
+        }
     }
 
     // ── Advance quarter: generate event, run AI, pay income ─────────────────────
@@ -109,6 +180,7 @@ public class GameService {
             if (state.quarter > 4) { state.quarter = 1; state.year++; }
         }
 
+        writeThrough(state);
         return toDTO(state);
     }
 
@@ -137,6 +209,7 @@ public class GameService {
             String.format("%s bought $%,.0f of %s", human.name, amount, assetId.toUpperCase())));
 
         recalcNetWorths(state);
+        writeThrough(state);
         return toDTO(state);
     }
 
@@ -161,6 +234,7 @@ public class GameService {
                 human.name, pct, assetId.toUpperCase(), proceeds)));
 
         recalcNetWorths(state);
+        writeThrough(state);
         return toDTO(state);
     }
 

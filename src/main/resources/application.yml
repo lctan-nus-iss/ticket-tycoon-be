@@ -3,8 +3,6 @@ spring:
     name: ticker-tycoon-backend
   autoconfigure:
     exclude:
-      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
-      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
       - org.springframework.ai.model.anthropic.autoconfigure.AnthropicChatAutoConfiguration
       - org.springframework.ai.model.openai.autoconfigure.OpenAiChatAutoConfiguration
       - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioSpeechAutoConfiguration
@@ -28,22 +26,24 @@ spring:
       api-key: ${DEEPSEEK_API_KEY:}
 #    ollama:
 #      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
-  # datasource:
-  #   url: jdbc:postgresql://localhost:5432/tickertycoon
-  #   username: ${DB_USERNAME:postgres}
-  #   password: ${DB_PASSWORD:postgres}
-  # jpa:
-  #   hibernate:
-  #     ddl-auto: update
-  #   show-sql: false
-  #   properties:
-  #     hibernate:
-  #       dialect: org.hibernate.dialect.PostgreSQLDialect
-  #       format_sql: true
-  # data:
-  #   redis:
-  #     host: ${REDIS_HOST:localhost}
-  #     port: ${REDIS_PORT:6379}
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:tickertycoon}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+    mongodb:
+      uri: ${MONGODB_URI:mongodb://localhost:27017/tickertycoon}
   web:
     cors:
       allowed-origins: "http://localhost:5173,http://localhost:3000"
@@ -58,6 +58,9 @@ ticker-tycoon:
     enabled: true
     target-size: 12
     refill-threshold: 4
+  games:
+    max-active: ${MAX_ACTIVE_GAMES:50}
+    max-players: 6
 
 management:
   endpoints:
